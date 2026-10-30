@@ -14,6 +14,9 @@ from src.db import db
 from src.services.ai_service import generate_response, generate_vectors
 from src.services.vector_service import create_memory, query_memory
 
+from langchain_core.messages import HumanMessage, AIMessage
+from src.prompts.chat_prompt import CHAT_PROMPT
+
 logger = logging.getLogger(__name__)
 
 sio = socketio.AsyncServer(
@@ -160,14 +163,38 @@ async def handle_ai_message(sid, payload):
             },
         )
 
-        recent_messages = [
-            {
-                "role": item.get("role", "user"),
-                "parts": [{"text": item.get("content", "")}],
-            }
-            for item in chat_history
-        ]
+        # recent_messages = [
+        #     {
+        #         "role": item.get("role", "user"),
+        #         "parts": [{"text": item.get("content", "")}],
+        #     }
+        #     for item in chat_history
+        # ]
 
+        # relevant_texts = [
+        #     match.metadata.get("text", "")
+        #     for match in memory
+        #     if getattr(match, "metadata", None)
+        #     and match.metadata.get("text")
+        # ]
+
+        # # Keep retrieved memories separate from the conversation history.
+        # prompt = ""
+        # if relevant_texts:
+        #     prompt += (
+        #         "Relevant past context:\n"
+        #         + "\n".join(relevant_texts)
+        #         + "\n\n"
+        #     )
+
+        # prompt += "\n".join(
+        #     f"{item['role']}: {item['parts'][0]['text']}"
+        #     for item in recent_messages
+        # )
+
+        # response = await generate_response(prompt)
+
+        # Extract relevant memories from Pinecone.
         relevant_texts = [
             match.metadata.get("text", "")
             for match in memory
@@ -175,21 +202,38 @@ async def handle_ai_message(sid, payload):
             and match.metadata.get("text")
         ]
 
-        # Keep retrieved memories separate from the conversation history.
-        prompt = ""
-        if relevant_texts:
-            prompt += (
-                "Relevant past context:\n"
-                + "\n".join(relevant_texts)
-                + "\n\n"
-            )
-
-        prompt += "\n".join(
-            f"{item['role']}: {item['parts'][0]['text']}"
-            for item in recent_messages
+        relevant_context = (
+            "\n\n".join(relevant_texts)
+            if relevant_texts
+            else "No relevant past context available."
         )
 
-        response = await generate_response(prompt)
+        # Convert MongoDB history into LangChain message objects.
+        chat_messages = []
+
+        for item in chat_history:
+            message_content = item.get("content", "")
+            role = item.get("role")
+
+            if role == "user":
+                chat_messages.append(
+                    HumanMessage(content=message_content)
+                )
+
+            elif role == "model":
+                chat_messages.append(
+                    AIMessage(content=message_content)
+                )
+
+        # Build the prompt using ChatPromptTemplate.
+        prompt_value = CHAT_PROMPT.invoke(
+            {
+                "relevant_context": relevant_context,
+                "chat_history": chat_messages,
+            }
+        )
+
+        response = await generate_response(prompt_value)
 
         # Save the AI response and generate its embedding.
         response_created_at = datetime.now(timezone.utc)
